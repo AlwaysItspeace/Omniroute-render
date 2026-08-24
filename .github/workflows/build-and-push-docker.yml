@@ -16,6 +16,11 @@ jobs:
     name: Build & Publish to GHCR
     runs-on: ubuntu-latest
     steps:
+      - name: Maximize build space & swap
+        uses: pierotofy/set-swap-space@master
+        with:
+          swap-size-gb: 12
+
       - name: Checkout repository
         uses: actions/checkout@v4
 
