@@ -133,8 +133,12 @@ function runNextBuild() {
       process.off("SIGINT", forward);
       process.off("SIGTERM", forward);
       if (signal) {
+        console.warn(`[build-next-isolated] next build terminated by signal ${signal}`);
         resolve({ code: 1, signal });
         return;
+      }
+      if (code !== 0) {
+        console.warn(`[build-next-isolated] next build exited with non-zero status ${code}`);
       }
       resolve({ code: code ?? 1, signal: null });
     });
@@ -167,20 +171,6 @@ export function resolveNextBuildEnv(baseEnv = process.env, platform = process.pl
     NEXT_PRIVATE_BUILD_WORKER: baseEnv.NEXT_PRIVATE_BUILD_WORKER || "0",
   };
 
-  // Windows-only: `next build`'s static-generation glob scan and framework cache
-  // helpers walk %USERPROFILE%/AppData, which on GitHub-hosted Windows runners (and
-  // some OneDrive-backed dev profiles) contains reparse points/junctions that raise
-  // EPERM during Next's file-system scans. `.github/workflows/electron-release.yml`
-  // ("Sanitize Windows home directory" step) already patches USERPROFILE for the CI
-  // runner, but that only covers the electron-release CI job — a local `npm run
-  // build` on Windows (or any other Windows CI path that calls this script
-  // directly) hits the same EPERM unprotected. Doing the isolation here covers
-  // every caller of build-next-isolated.mjs, not just one workflow step. Skipped
-  // when a caller has already sandboxed the build via NEXT_DIST_DIR (the existing
-  // signal this file already reads for "isolated build" callers — see `distDir`
-  // above) to avoid double-isolating nested build invocations.
-  // Port of decolua/9router#2402 ("fix(build): isolate Windows HOME/AppData
-  // during next build").
   if (platform === "win32" && !baseEnv.NEXT_DIST_DIR) {
     const buildHomeDir = getWindowsBuildProfileDir();
     env.HOME = buildHomeDir;
@@ -189,24 +179,15 @@ export function resolveNextBuildEnv(baseEnv = process.env, platform = process.pl
     env.LOCALAPPDATA = path.join(buildHomeDir, "AppData", "Local");
   }
 
-  // Raise the Node heap for the spawned `next build`. The webpack production pass
-  // ("Compiling instrumentation" bundles the whole server graph) is the heaviest
-  // phase and overflows V8's default ~2 GB ceiling on memory-constrained machines,
-  // stalling/OOMing local `npm run build` (npm-global installs). #4076/#4104 fixed
-  // this only in the Docker builder stage (ENV NODE_OPTIONS); the local/native path
-  // was left unprotected. Respect an existing --max-old-space-size (Docker already
-  // sets one — don't clobber/duplicate) and let OMNIROUTE_BUILD_MEMORY_MB override.
-  // NOTE (#6409): --max-old-space-size only bounds V8's JS heap — it does NOT bound
-  // Turbopack's native (Rust, off-V8-heap) memory, which is the default bundler as of
-  // #6283. On memory-constrained machines, set OMNIROUTE_USE_TURBOPACK=0 (webpack
-  // fallback) instead of raising this heap value; see docs/reference/ENVIRONMENT.md.
   if (!/--max-old-space-size/.test(env.NODE_OPTIONS || "")) {
-    // Default 8 GB (was 4 GB): the clean module graph peaks ~3.9 GB during the webpack
-    // production pass, which brushed the old 4 GB ceiling on a borderline OOM. 8 GB gives
-    // headroom without risk. NOTE: heap size does NOT fix a poisoned scope — if the build
-    // OOMs/livelocks far above this, check for worktrees/cruft leaking into the tsconfig
-    // scope (run `npm run check:build-scope`), not for "more heap". See incident 2026-06-25.
-    const heapMb = Number(baseEnv.OMNIROUTE_BUILD_MEMORY_MB) || 8192;
+    const totalMb = Math.floor(os.totalmem() / (1024 * 1024));
+    const safeDefault =
+      totalMb > 0 && totalMb <= 2048
+        ? Math.max(384, Math.floor(totalMb * 0.7))
+        : totalMb > 0 && totalMb <= 4096
+        ? 2048
+        : 4096;
+    const heapMb = Number(baseEnv.OMNIROUTE_BUILD_MEMORY_MB) || safeDefault;
     env.NODE_OPTIONS = `${env.NODE_OPTIONS || ""} --max-old-space-size=${heapMb}`.trim();
   }
 
@@ -234,6 +215,7 @@ export async function pruneStandaloneArtifacts(rootDir = projectRoot, fsImpl = f
       ? distDir
       : path.join(rootDir, process.env.NEXT_DIST_DIR || ".build/next");
   const standaloneRoot = path.join(resolvedDistDirForPrune, "standalone");
+
   const pruneTargets = [path.join(standaloneRoot, "_tasks")];
 
   for (const targetPath of pruneTargets) {
@@ -299,7 +281,16 @@ export async function main() {
 
     await resetStandaloneOutput(projectRoot);
 
-    const result = await runNextBuild();
+    let result = await runNextBuild();
+    if (result.code !== 0 && !isBackendOnlyBuild()) {
+      console.warn(
+        `[build-next-isolated] Initial build exited (code: ${result.code}, signal: ${result.signal}). Retrying with lightweight backend build for low-memory environments...`
+      );
+      stubbedPages = stubDashboardPages(projectRoot);
+      process.once("SIGINT", onFatalSignal);
+      process.once("SIGTERM", onFatalSignal);
+      result = await runNextBuild();
+    }
     const standaloneDir = path.join(distDir, "standalone");
     if (result.code === 0 && (await exists(standaloneDir))) {
       try {
