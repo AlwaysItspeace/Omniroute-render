@@ -281,15 +281,10 @@ export async function main() {
 
     await resetStandaloneOutput(projectRoot);
 
-    let result = await runNextBuild();
-    if (result.code !== 0 && !isBackendOnlyBuild()) {
-      console.warn(
-        `[build-next-isolated] Initial build exited (code: ${result.code}, signal: ${result.signal}). Retrying with lightweight backend build for low-memory environments...`
-      );
-      stubbedPages = stubDashboardPages(projectRoot);
-      process.once("SIGINT", onFatalSignal);
-      process.once("SIGTERM", onFatalSignal);
-      result = await runNextBuild();
+    const result = await runNextBuild();
+    if (result.code !== 0) {
+      console.error(`[build-next-isolated] next build failed with code ${result.code}`);
+      process.exit(result.code || 1);
     }
     const standaloneDir = path.join(distDir, "standalone");
     if (result.code === 0 && (await exists(standaloneDir))) {
