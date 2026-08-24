@@ -4,10 +4,12 @@
     runtime: node
     plan: free
     region: virginia
-    buildCommand: npm install --include=dev && npm run build
+    buildCommand: npm run build:backend
     startCommand: npm start
     envVars:
       - key: NODE_ENV
         value: production
+      - key: OMNIROUTE_BUILD_BACKEND_ONLY
+        value: "1"
       - key: HOSTNAME
         value: 0.0.0.0
