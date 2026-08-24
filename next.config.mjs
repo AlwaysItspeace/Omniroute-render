@@ -1,5 +1,4 @@
 import createNextIntlPlugin from "next-intl/plugin";
-import { createMDX } from "fumadocs-mdx/next";
 import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { mitmManagerAliasFor } from "./scripts/build/mitm-stub-flag.mjs";
@@ -9,6 +8,16 @@ import {
   nonPageRoutePrefixes,
   resolveDashboardEmbedMode,
 } from "./scripts/build/dashboardEmbed.mjs";
+
+let withMDX = (config) => config;
+try {
+  const mdxModule = await import("fumadocs-mdx/next");
+  if (typeof mdxModule?.createMDX === "function") {
+    withMDX = mdxModule.createMDX();
+  }
+} catch (mdxErr) {
+  console.warn("[next.config] Optional fumadocs-mdx loader fallback:", mdxErr?.message);
+}
 
 const withNextIntl = createNextIntlPlugin("./src/i18n/request.ts");
 const distDir = process.env.NEXT_DIST_DIR || ".build/next";
@@ -697,7 +706,5 @@ const nextConfig = {
     ];
   },
 };
-
-const withMDX = createMDX();
 
 export default withMDX(withNextIntl(nextConfig));

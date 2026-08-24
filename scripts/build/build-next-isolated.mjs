@@ -4,7 +4,8 @@ import fs from "node:fs/promises";
 import { mkdirSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { spawn } from "node:child_process";
+import { spawn, execSync } from "node:child_process";
+import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
 import {
   assembleStandalone,
@@ -17,15 +18,25 @@ import {
   restoreDashboardPages,
 } from "./backendOnlyPages.mjs";
 
-/**
- * Layer 1: `app/` has been renamed to `dist/` and the App-Router collision is gone.
- * The only transient paths remaining are `.tmp/wine32` (Wine prefix used by some
- * older build tools) and `_tasks` (planning workspace).
- */
-
 const projectRoot = process.cwd();
 const distDir = path.resolve(process.env.NEXT_DIST_DIR || ".build/next");
 const backupRoot = path.join(os.tmpdir(), `omniroute-build-isolated-${process.pid}-${Date.now()}`);
+
+const reqHelper = createRequire(import.meta.url);
+try {
+  reqHelper.resolve("fumadocs-mdx");
+} catch {
+  console.log("[build-next-isolated] Required build dependencies not found in node_modules. Running npm install...");
+  try {
+    execSync("npm install --include=dev --legacy-peer-deps", {
+      stdio: "inherit",
+      cwd: projectRoot,
+      env: { ...process.env, NODE_ENV: "development" },
+    });
+  } catch (err) {
+    console.warn("[build-next-isolated] Warning: npm install failed or returned non-zero:", err?.message);
+  }
+}
 
 export function getTransientBuildPaths(rootDir = projectRoot, env = process.env) {
   const paths = [
